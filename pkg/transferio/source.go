@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"os"
 )
 
 // DataSource 定义数据源接口
@@ -57,6 +58,38 @@ func (s *UploadSource) Open(ctx context.Context) (io.ReadCloser, error) {
 func (s *UploadSource) Size() (int64, bool) {
 	if s.KnownSize > 0 {
 		return s.KnownSize, true
+	}
+	return 0, false
+}
+
+type FileSource struct {
+	Path string
+	size int64
+}
+
+func (s *FileSource) Open(ctx context.Context) (io.ReadCloser, error) {
+	f, err := os.Open(s.Path)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	s.size = fi.Size()
+	return f, nil
+}
+
+func (s *FileSource) Size() (int64, bool) {
+	if s.size > 0 {
+		return s.size, true
+	}
+	// Attempt to stat if not opened yet
+	fi, err := os.Stat(s.Path)
+	if err == nil {
+		s.size = fi.Size()
+		return s.size, true
 	}
 	return 0, false
 }

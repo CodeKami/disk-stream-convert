@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"disk-stream-convert/pkg/converter"
 	"disk-stream-convert/pkg/transferio"
 )
 
@@ -83,7 +84,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	start := time.Now()
 
-	converter := &StreamConverter{
+	c := &converter.StreamConverter{
 		Source: &transferio.UploadSource{
 			R:         rc,
 			KnownSize: knownSize,
@@ -94,7 +95,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		DstFmt:   dst,
 	}
 
-	written, capacity, err := converter.Run(ctx)
+	written, capacity, err := c.Run(ctx)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -163,7 +164,7 @@ func importHandler(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	start := time.Now()
 
-	converter := &StreamConverter{
+	c := &converter.StreamConverter{
 		Source:   &transferio.HTTPSource{URL: req.URL},
 		Sink:     sink,
 		Prealloc: req.Prealloc,
@@ -171,7 +172,7 @@ func importHandler(w http.ResponseWriter, r *http.Request) {
 		DstFmt:   req.Dst,
 	}
 
-	written, capacity, err := converter.Run(ctx)
+	written, capacity, err := c.Run(ctx)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
