@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	vmdkstream "disk-stream-convert/format/vmdk-stream"
@@ -29,6 +30,63 @@ type importResponse struct {
 	ElapsedSeconds int64  `json:"elapsedSeconds"`
 }
 
+func uploadHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	prealloc := r.URL.Query().Get("prealloc") == "true"
+	outDir := serverOutputDir
+	if outDir == "" {
+		writeErr(w, http.StatusInternalServerError, errors.New("server misconfigured: output dir empty"))
+		return
+	}
+	var (
+		rc     io.ReadCloser
+		name   string
+		source transferio.DataSource
+	)
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		file, fh, err := r.FormFile("file")
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		rc = file
+		name = fh.Filename
+	} else {
+		rc = r.Body
+		name = r.URL.Query().Get("name")
+		if name == "" {
+			name = "upload.img"
+		}
+	}
+	source = &transferio.UploadSource{R: rc}
+	outPath := filepath.Join(outDir, path.Base(name))
+	f, err := os.OpenFile(outPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	sink := &transferio.FileSink{File: f}
+	defer sink.Close()
+	ctx := r.Context()
+	start := time.Now()
+	written, capacity, err := importVMDK(ctx, source, sink, prealloc)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	resp := importResponse{
+		Output:         outPath,
+		WrittenBytes:   written,
+		CapacityBytes:  capacity,
+		ElapsedSeconds: int64(time.Since(start).Seconds()),
+	}
+	json.NewEncoder(w).Encode(resp)
+}
 func importHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -174,6 +232,7 @@ func main() {
 	serverOutputDir = *outDir
 
 	http.HandleFunc("/import-vmdk", importHandler)
+	http.HandleFunc("/upload-vmdk", uploadHandler)
 	srv := &http.Server{
 		Addr:              ":8080",
 		ReadHeaderTimeout: 5 * time.Second,

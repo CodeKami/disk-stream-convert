@@ -32,3 +32,11 @@ func (s *HTTPSource) Open(ctx context.Context) (io.ReadCloser, error) {
 	}
 	return resp.Body, nil
 }
+
+type UploadSource struct {
+	R io.ReadCloser
+}
+
+func (s *UploadSource) Open(ctx context.Context) (io.ReadCloser, error) {
+	return s.R, nil
+}
