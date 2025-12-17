@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,13 +13,14 @@ import (
 	"strings"
 	"time"
 
-	vmdkstream "disk-stream-convert/format/vmdk-stream"
 	"disk-stream-convert/pkg/transferio"
 )
 
 type importRequest struct {
 	URL      string `json:"url"`
 	Prealloc bool   `json:"prealloc"`
+	Src      string `json:"src"`
+	Dst      string `json:"dst"`
 }
 
 type importResponse struct {
@@ -33,15 +33,21 @@ type importResponse struct {
 func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	prealloc := r.URL.Query().Get("prealloc") == "true"
+	src := r.URL.Query().Get("src")
+	dst := r.URL.Query().Get("dst")
+	if src == "" || dst == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("missing src or dst"))
+		return
+	}
 	outDir := serverOutputDir
 	if outDir == "" {
 		writeErr(w, http.StatusInternalServerError, errors.New("server misconfigured: output dir empty"))
 		return
 	}
 	var (
-		rc     io.ReadCloser
-		name   string
-		source transferio.DataSource
+		rc        io.ReadCloser
+		name      string
+		knownSize int64
 	)
 	ct := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "multipart/form-data") {
@@ -56,14 +62,15 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		rc = file
 		name = fh.Filename
+		knownSize = fh.Size
 	} else {
 		rc = r.Body
 		name = r.URL.Query().Get("name")
 		if name == "" {
 			name = "upload.img"
 		}
+		knownSize = r.ContentLength
 	}
-	source = &transferio.UploadSource{R: rc}
 	outPath := filepath.Join(outDir, path.Base(name))
 	f, err := os.OpenFile(outPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o644)
 	if err != nil {
@@ -72,13 +79,27 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	sink := &transferio.FileSink{File: f}
 	defer sink.Close()
+
 	ctx := r.Context()
 	start := time.Now()
-	written, capacity, err := importVMDK(ctx, source, sink, prealloc)
+
+	converter := &StreamConverter{
+		Source: &transferio.UploadSource{
+			R:         rc,
+			KnownSize: knownSize,
+		},
+		Sink:     sink,
+		Prealloc: prealloc,
+		SrcFmt:   src,
+		DstFmt:   dst,
+	}
+
+	written, capacity, err := converter.Run(ctx)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+
 	resp := importResponse{
 		Output:         outPath,
 		WrittenBytes:   written,
@@ -87,6 +108,7 @@ func uploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewEncoder(w).Encode(resp)
 }
+
 func importHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -101,10 +123,16 @@ func importHandler(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("prealloc") == "true" {
 			req.Prealloc = true
 		}
+		req.Src = r.URL.Query().Get("src")
+		req.Dst = r.URL.Query().Get("dst")
 	}
 
 	if req.URL == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("missing url"))
+		return
+	}
+	if req.Src == "" || req.Dst == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("missing src or dst"))
 		return
 	}
 
@@ -134,20 +162,27 @@ func importHandler(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	start := time.Now()
-	source := &transferio.HTTPSource{URL: req.URL}
-	written, capacity, err := importVMDK(ctx, source, sink, req.Prealloc)
+
+	converter := &StreamConverter{
+		Source:   &transferio.HTTPSource{URL: req.URL},
+		Sink:     sink,
+		Prealloc: req.Prealloc,
+		SrcFmt:   req.Src,
+		DstFmt:   req.Dst,
+	}
+
+	written, capacity, err := converter.Run(ctx)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 
-	resp := importResponse{
+	json.NewEncoder(w).Encode(importResponse{
 		Output:         outPath,
 		WrittenBytes:   written,
 		CapacityBytes:  capacity,
 		ElapsedSeconds: int64(time.Since(start).Seconds()),
-	}
-	json.NewEncoder(w).Encode(resp)
+	})
 }
 
 var serverOutputDir string
@@ -164,61 +199,6 @@ func deriveOutputPath(baseDir string, src string) (string, error) {
 	return filepath.Join(baseDir, name), nil
 }
 
-func importVMDK(ctx context.Context, source transferio.DataSource, sink transferio.StorageSink, prealloc bool) (written uint64, capacityBytes uint64, err error) {
-	rc, err := source.Open(ctx)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer rc.Close()
-
-	vs := vmdkstream.NewVMDKStreamReader(rc)
-
-	hdr := make([]byte, 512)
-	if _, err := io.ReadFull(rc, hdr); err != nil {
-		return 0, 0, err
-	}
-	y, err := vs.IsHeaderForAPI(hdr)
-	if err != nil {
-		return 0, 0, err
-	}
-	if !y {
-		return 0, 0, errors.New("invalid vmdk stream header")
-	}
-
-	unnecessary := make([]byte, vs.Header.Overhead<<vmdkstream.SECTOR_SIZE_SHIFT-512)
-	if _, err := io.ReadFull(rc, unnecessary); err != nil {
-		return 0, 0, err
-	}
-
-	capacityBytes = uint64(vs.Header.Capacity) << vmdkstream.SECTOR_SIZE_SHIFT
-	grainBytes := uint64(vs.Header.GrainSize) << vmdkstream.SECTOR_SIZE_SHIFT
-
-	if prealloc {
-		if err := sink.Preallocate(ctx, int64(capacityBytes)); err != nil {
-			return 0, 0, err
-		}
-	}
-
-	buf := make([]byte, int(grainBytes))
-	for {
-		lba, n, err := vs.Read(buf)
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return written, capacityBytes, err
-		}
-		if n > 0 {
-			if _, err := sink.WriteAt(ctx, buf[:n], int64(lba)); err != nil {
-				return written, capacityBytes, err
-			}
-			written += uint64(n)
-		}
-	}
-
-	return written, capacityBytes, nil
-}
-
 func writeErr(w http.ResponseWriter, code int, err error) {
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{
@@ -231,8 +211,8 @@ func main() {
 	flag.Parse()
 	serverOutputDir = *outDir
 
-	http.HandleFunc("/import-vmdk", importHandler)
-	http.HandleFunc("/upload-vmdk", uploadHandler)
+	http.HandleFunc("/import", importHandler)
+	http.HandleFunc("/upload", uploadHandler)
 	srv := &http.Server{
 		Addr:              ":8080",
 		ReadHeaderTimeout: 5 * time.Second,
