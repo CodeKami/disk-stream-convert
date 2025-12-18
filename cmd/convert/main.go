@@ -10,6 +10,7 @@ import (
 
 	"disk-stream-convert/pkg/converter"
 	"disk-stream-convert/pkg/diskfmt"
+	"disk-stream-convert/pkg/diskfmt/qcow2"
 	"disk-stream-convert/pkg/diskfmt/raw"
 	"disk-stream-convert/pkg/diskfmt/vmdk"
 	"disk-stream-convert/pkg/transferio"
@@ -63,6 +64,8 @@ func main() {
 		reader = raw.NewReader(source)
 	case "vmdk":
 		reader = vmdk.NewReader(source)
+	case "qcow2":
+		reader = qcow2.NewReader(source)
 	default:
 		fmt.Println("Error: unsupported source format:", *srcFmt)
 		os.Exit(1)

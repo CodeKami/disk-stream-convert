@@ -17,6 +17,7 @@ import (
 	"disk-stream-convert/pkg/converter"
 	"disk-stream-convert/pkg/diskfmt"
 	"disk-stream-convert/pkg/diskfmt/raw"
+	"disk-stream-convert/pkg/diskfmt/qcow2"
 	"disk-stream-convert/pkg/diskfmt/vmdk"
 	"disk-stream-convert/pkg/transferio"
 )
@@ -27,6 +28,8 @@ func getReader(srcFmt string, source transferio.StreamRead) (diskfmt.StreamReade
 		return raw.NewReader(source), nil
 	case "vmdk":
 		return vmdk.NewReader(source), nil
+	case "qcow2":
+		return qcow2.NewReader(source), nil
 	default:
 		return nil, errors.New("unsupported source format: " + srcFmt)
 	}

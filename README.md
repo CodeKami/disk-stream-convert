@@ -3,7 +3,9 @@
 A Go project for streaming disk image conversion that provides both a command-line tool and an HTTP service.
 
 - Primary use: bidirectional conversion between `raw` and `vmdk (streamOptimized)`. Supports local file-to-file conversion, streaming import from a URL to local storage, and online conversion via HTTP upload/download.
-- Supported formats: `raw`, `vmdk` (streamOptimized). The repository includes some `qcow2` type definitions, but the current HTTP and CLI conversion only implement `raw` and `vmdk`.
+- Supported formats:
+  - Readers (source): `raw`, `vmdk` (streamOptimized), `qcow2` (v3, no backing file, deflate-only, no encryption)
+  - Writers (destination): `raw`, `vmdk` (streamOptimized)
 
 ## Build
 
@@ -16,10 +18,10 @@ A Go project for streaming disk image conversion that provides both a command-li
 
 Binary: `dsc-convert`
 
-Flags:
+ Flags:
 - `-src` source path or URL (`http://`, `https://` supported)
 - `-dst` destination local file path
-- `-src-fmt` source format: `raw` or `vmdk`
+- `-src-fmt` source format: `raw`, `vmdk`, or `qcow2`
 - `-dst-fmt` destination format: `raw` or `vmdk` (default `raw`)
 - `-prealloc` whether to preallocate capacity for `raw` destination (default false)
 
@@ -39,6 +41,14 @@ Examples:
 - Preallocate `raw` destination:
   ```
   ./bin/dsc-convert -src /path/disk.vmdk -dst /path/disk.raw -src-fmt vmdk -dst-fmt raw -prealloc
+  ```
+- Local `qcow2` → local `raw`:
+  ```
+  ./bin/dsc-convert -src /path/disk.qcow2 -dst /path/disk.raw -src-fmt qcow2 -dst-fmt raw
+  ```
+- Local `qcow2` → local `vmdk`:
+  ```
+  ./bin/dsc-convert -src /path/disk.qcow2 -dst /path/disk.vmdk -src-fmt qcow2 -dst-fmt vmdk
   ```
 
 ## HTTP Service
@@ -61,7 +71,7 @@ Start:
   - `multipart/form-data`, field name: `file`
   - `application/octet-stream` (request body is the data)
 - Query parameters:
-  - `src` source format: `raw`, `vmdk`
+  - `src` source format: `raw`, `vmdk`, `qcow2`
   - `dst` destination format: `raw`, `vmdk`
   - `prealloc` whether to preallocate (only effective when `dst=raw`, `true`/`false`)
   - `name` output filename (optional, default `upload.img`)
@@ -82,6 +92,12 @@ Start:
     curl -X POST "http://localhost:8080/upload?src=vmdk&dst=raw&prealloc=true&name=disk.raw" \
       -F "file=@/path/disk.vmdk"
     ```
+  - Upload `qcow2` as octet-stream and convert to `raw`:
+    ```
+    curl -X POST "http://localhost:8080/upload?src=qcow2&dst=raw&name=disk.raw" \
+      -H "Content-Type: application/octet-stream" \
+      --data-binary @/path/disk.qcow2
+    ```
 
 ### Import from URL and Convert (/import)
 
@@ -89,7 +105,7 @@ Start:
 - Description: Server streams the source image from the specified URL and converts it to the local output directory.
 - GET query parameters:
   - `url` source file URL
-  - `src` source format: `raw`, `vmdk`
+  - `src` source format: `raw`, `vmdk`, `qcow2`
   - `dst` destination format: `raw`, `vmdk`
   - `prealloc` whether to preallocate (only effective when `dst=raw`)
 - POST request body (`application/json`):
@@ -100,6 +116,9 @@ Start:
 - Examples (GET):
   ```
   curl "http://localhost:8080/import?url=https://example.com/disk.vmdk&src=vmdk&dst=raw&prealloc=true"
+  ```
+  ```
+  curl "http://localhost:8080/import?url=https://example.com/disk.qcow2&src=qcow2&dst=vmdk"
   ```
 - Examples (POST):
   ```
@@ -114,7 +133,7 @@ Start:
 - Description: Read the source image from a local file, convert it to the target format online, and return it as the response body.
 - Query parameters:
   - `path` local source file path
-  - `src` source format: `raw`, `vmdk`
+  - `src` source format: `raw`, `vmdk`, `qcow2`
   - `dst` destination format: `raw`, `vmdk`
 - Response:
   - `Content-Type: application/octet-stream`
@@ -123,6 +142,9 @@ Start:
 - Example:
   ```
   curl -OJ "http://localhost:8080/export?src=raw&dst=vmdk&path=/tmp/disk-streams/disk.raw"
+  ```
+  ```
+  curl -OJ "http://localhost:8080/export?src=qcow2&dst=raw&path=/tmp/disk-streams/disk.qcow2"
   ```
 
 ## How It Works
@@ -133,6 +155,7 @@ Start:
 
 ## Notes
 
-- Currently only `raw` ↔ `vmdk` conversion is implemented. To add more formats, implement corresponding Reader/Writer under `pkg/diskfmt` and integrate them in the server/CLI.
+- Readers supported: `raw`, `vmdk (streamOptimized)`, `qcow2` (v3 only; no backing files; deflate-only compressed clusters; no encryption; no unsupported header extensions). Writers supported: `raw`, `vmdk (streamOptimized)`.
+- To add more formats, implement corresponding Reader/Writer under `pkg/diskfmt` and integrate them in the server/CLI.
 - The server's local output directory is specified via `-outdir`; ensure write permissions and sufficient disk space.
 - `/export` performs online conversion and download. If an error occurs after streaming starts, the HTTP status cannot be changed; check server logs instead.
