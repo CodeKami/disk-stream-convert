@@ -1,23 +1,18 @@
 package diskfmt
 
-import "io"
+import (
+	"context"
+)
 
-type StreamFormatReader interface {
-	InitStream(r io.Reader) error
-	CapacityBytes() uint64
-	BlockBytes() int
-	Next(p []byte) (uint64, int, error)
+type StreamReader interface {
+	Open(ctx context.Context) error
+	Read(p []byte) (n int, offset int64, err error)
+	Capacity() int64
+	Close() error
 }
 
-type RandomFormatReader interface {
-	InitRandom(r io.ReaderAt) error
-	CapacityBytes() uint64
-	BlockBytes() int
-	Next(p []byte) (uint64, int, error)
-}
-
-type FormatWriter interface {
-	Init(w io.Writer, fileName string, capacityBytes uint64) error
-	WriteBlock(p []byte) (int, error)
+type StreamWriter interface {
+	Open(ctx context.Context, capacity int64) error
+	Write(p []byte) (n int, err error)
 	Close() error
 }

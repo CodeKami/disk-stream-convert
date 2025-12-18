@@ -344,6 +344,25 @@ func (vs *VMDKStream) isHeader(b []byte) (bool, error) {
 	return true, nil
 }
 
+func (vs *VMDKStream) InitStream() error {
+	buf := make([]byte, 512)
+	if _, err := io.ReadFull(vs.Reader, buf); err != nil {
+		return err
+	}
+	y, err := vs.isHeader(buf)
+	if err != nil {
+		return err
+	}
+	if !y {
+		return errors.New("invalid vmdk header")
+	}
+	return nil
+}
+
+func (vs *VMDKStream) CapacityBytes() uint64 {
+	return uint64(vs.Header.Capacity * SECTOR_SIZE)
+}
+
 func (vs *VMDKStream) IsHeaderForAPI(b []byte) (bool, error) {
     bufReader := bytes.NewReader(b)
     if err := binary.Read(bufReader, binary.LittleEndian, &vs.Header); err != nil {
@@ -403,7 +422,7 @@ func (vs *VMDKStream) parseGrainMarker(b []byte) (*GrainMarker, error) {
 	return &marker, nil
 }
 
-func (vs *VMDKStream) Read(p []byte) (uint64, int, error) {
+func (vs *VMDKStream) Next(p []byte) (uint64, int, error) {
 	buf := make([]byte, 512)
 	var n int
 
